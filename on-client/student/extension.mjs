@@ -247,7 +247,7 @@ export function createStudentView() {
           };
           const createFilter = ({ accessibleName, valuesFor, missingLabel }) => {
             const label = document.createElement('label');
-            label.textContent = `${accessibleName}: `;
+            label.textContent = accessibleName;
             const select = document.createElement('select');
             const allOption = document.createElement('option');
             allOption.value = 'all';
