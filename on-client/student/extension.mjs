@@ -1019,6 +1019,232 @@ export function createStudentView() {
 
       return root;
     },
-    renderAction() { return '학생 구현 대기: 현재 사건·조치·실제 대상·사람 확인·ACK와 원천 효과·unknown을 구분하세요.'; },
+    renderAction({ status, event, actionId, target, receipt, observation, message, confirmationExpiresAt, error } = {}) {
+      const root = document.createElement('div');
+      root.className = 'student-action';
+
+      const line = (label, value) => {
+        const item = document.createElement('p');
+        item.textContent = `${label}: ${value}`;
+        root.append(item);
+      };
+      const safeCode = (value) => typeof value === 'string'
+        && /^[A-Za-z][A-Za-z0-9_.:-]{0,99}$/.test(value)
+        ? value
+        : '확인 불가';
+      const safeMessage = (value) => {
+        if (typeof value !== 'string' || value.trim() === '') return '오류 메시지를 확인할 수 없습니다.';
+        return value
+          .replace(/[\u0000-\u001f\u007f]/g, ' ')
+          .replace(/\b(bearer\s+)[A-Za-z0-9._~+/=-]+/gi, '$1[가림]')
+          .replace(/\b(api[_ -]?key|access[_ -]?token|refresh[_ -]?token|authorization|credential|token|password|passwd|secret|private[_ -]?key|비밀번호|토큰|키)(\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;]+)/gi, '$1$2[가림]')
+          .replace(/([?&](?:api[_-]?key|access[_-]?token|refresh[_-]?token|authorization|token|password|secret)=)[^&#\s]+/gi, '$1[가림]')
+          .replace(/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, '[가림]')
+          .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/gi, '[비밀 키 가림]')
+          .trim()
+          .slice(0, 500) || '오류 메시지를 확인할 수 없습니다.';
+      };
+      const readableMessage = (value) => typeof value === 'string' && value.trim() !== ''
+        ? safeMessage(value)
+        : null;
+      const rawStatus = typeof status === 'string' && status.trim() !== '' ? status : '확인 불가';
+      const safeStatusMessage = readableMessage(message);
+      const hasValue = (value) => value !== undefined && value !== null && value !== '';
+      const isNonEmptyId = (value) => typeof value === 'string' && value.trim() !== '';
+      const displayValue = (value) => {
+        if (typeof value === 'string') return value;
+        if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') {
+          return String(value);
+        }
+        if (value == null) return '확인 불가';
+        try {
+          return JSON.stringify(value) ?? '확인 불가';
+        } catch {
+          return '확인 불가';
+        }
+      };
+
+      const currentEventIdValid = isNonEmptyId(event?.id);
+      const currentActionIdValid = isNonEmptyId(actionId);
+      const receiptObject = receipt !== null && typeof receipt === 'object' && !Array.isArray(receipt);
+      const receiptEventIdValid = receiptObject && isNonEmptyId(receipt.eventId);
+      const receiptActionIdValid = receiptObject && isNonEmptyId(receipt.actionId);
+      const receiptRequestIdValid = receiptObject && isNonEmptyId(receipt.requestId);
+      const eventBindingMismatch = currentEventIdValid && receiptEventIdValid
+        && event.id !== receipt.eventId;
+      const actionBindingMismatch = currentActionIdValid && receiptActionIdValid
+        && actionId !== receipt.actionId;
+      const receiptBindingMismatch = eventBindingMismatch || actionBindingMismatch;
+      const receiptBindingComplete = currentEventIdValid
+        && currentActionIdValid
+        && receiptEventIdValid
+        && receiptActionIdValid
+        && !receiptBindingMismatch;
+      const canMarkCurrentEventIntent = currentEventIdValid
+        && currentActionIdValid
+        && !receiptBindingMismatch;
+      const canMarkCurrentRequest = receiptBindingComplete && receiptRequestIdValid;
+
+      if (canMarkCurrentEventIntent) {
+        root.setAttribute('data-student-action-event', event.id);
+      }
+      if (canMarkCurrentRequest) {
+        root.setAttribute('data-student-action-request', receipt.requestId);
+      }
+
+      if (status === 'idle') {
+        line('상태', '아직 미실행 (idle)');
+      } else if (status === 'loading') {
+        line('상태', '조치 준비 또는 결과 조회 중 (loading)');
+        line('결과', '아직 확인되지 않았습니다.');
+      } else if (status === 'prepared') {
+        line('상태', '준비됨·미실행 (prepared)');
+        line('안내', '사람 확인이 필요하며, 이 상태는 조치가 아직 실행되지 않았음을 뜻합니다.');
+      } else if (status === 'executing') {
+        line('상태', '서버에 전달 중 (executing)');
+        line('결과', '요청 진행 상태이며 결과와 효과는 아직 확인되지 않았습니다.');
+      } else if (status === 'pending') {
+        line('상태', '서버 접수·처리 중 (pending)');
+        line('결과', 'ACK는 접수 확인일 뿐 실제 효과가 확인되었다는 뜻이 아닙니다.');
+      } else if (status === 'succeeded') {
+        if (observation?.effectApplied === true && receiptBindingComplete && receiptRequestIdValid) {
+          line('상태', '효과 확인 (succeeded)');
+          line('확인 근거', '관측 결과 effectApplied가 true입니다.');
+        } else if (receiptBindingMismatch) {
+          line('상태', '요청 결속 불일치: 현재 요청의 정상 결과로 확인할 수 없습니다.');
+          line('확인 상태', '영수증의 사건 또는 조치 ID가 현재 입력과 달라 효과 확인의 근거로 사용하지 않습니다.');
+        } else {
+          line('상태', '결과 불명 (succeeded)');
+          line('확인 상태', '실제 효과가 확인되지 않았습니다. 성공이나 효과 없음을 단정하지 않습니다.');
+        }
+      } else if (status === 'denied') {
+        line('상태', '연동 시스템에서 거절 (denied)');
+      } else if (status === 'failed') {
+        line('상태', '연동 시스템 처리 실패 (failed)');
+      } else if (status === 'unknown') {
+        line('상태', '결과 불명 (unknown)');
+        line('안내', '성공이나 효과 없음을 단정하지 않습니다. 제공 화면에서 결과를 다시 조회하세요.');
+      } else if (status === 'expired') {
+        line('상태', '확인 기한 만료 (expired)');
+        line('안내', '다시 준비가 필요합니다. 이 상태만으로 조치 실행 여부를 판단할 수 없습니다.');
+      } else if (status === 'error') {
+        line('상태', '요청 처리 오류 (error)');
+        line('오류 코드', safeCode(error?.code));
+        line('오류 메시지', safeMessage(error?.message));
+      } else {
+        line('상태', `확인할 수 없는 상태 (${rawStatus})`);
+        line('안내', '확인되지 않은 상태를 성공으로 처리하지 않습니다.');
+      }
+
+      if (hasValue(event?.id)) {
+        line('현재 사건 ID', displayValue(event.id));
+      }
+      if (Array.isArray(event?.evidence)) {
+        const evidenceIds = event.evidence
+          .filter((evidence) => evidence !== null
+            && typeof evidence === 'object'
+            && Object.hasOwn(evidence, 'id')
+            && hasValue(evidence.id));
+        for (const evidence of evidenceIds) {
+          line('근거 ID', displayValue(evidence.id));
+        }
+      }
+      if (hasValue(actionId)) {
+        line('조치 ID', displayValue(actionId));
+      }
+      if (hasValue(target?.id)) {
+        line('실제 대상 ID', displayValue(target.id));
+      }
+      if (hasValue(target?.generation)) {
+        line('대상 세대 (generation)', displayValue(target.generation));
+      }
+      if (hasValue(confirmationExpiresAt)) {
+        line('확인 기한', displayValue(confirmationExpiresAt));
+        if (status === 'prepared') {
+          line('기한 안내', '준비 상태의 확인 기한이며 인증 티켓이나 승인 완료를 뜻하지 않습니다.');
+        }
+      }
+
+      if (hasValue(receipt?.requestId)) {
+        line('요청 ID (requestId)', displayValue(receipt.requestId));
+      }
+      if (hasValue(receipt?.receiptId)) {
+        line('영수증 ID (receiptId)', displayValue(receipt.receiptId));
+      }
+      if (hasValue(receipt?.version)) {
+        line('영수증 버전 (version)', displayValue(receipt.version));
+      }
+      if (hasValue(receipt?.eventId)) {
+        line('영수증 사건 ID (eventId)', displayValue(receipt.eventId));
+        if (currentEventIdValid) {
+          line('사건 연결 확인', eventBindingMismatch
+            ? '현재 사건 ID와 일치하지 않습니다. 현재 요청 결과로 단정할 수 없습니다.'
+            : '현재 사건 ID와 일치합니다. 이는 화면 입력값의 비교이며, 서버의 전체 요청 결속 검증을 뜻하지 않습니다.');
+        } else {
+          line('사건 연결 확인', '현재 사건 ID가 없거나 유효하지 않아 대조할 수 없습니다. 일치한다고 판단하지 않습니다.');
+        }
+      }
+      if (hasValue(receipt?.actionId)) {
+        line('영수증 조치 ID (actionId)', displayValue(receipt.actionId));
+        if (currentActionIdValid) {
+          line('조치 연결 확인', actionBindingMismatch
+            ? '현재 조치 ID와 일치하지 않습니다. 현재 요청 결과로 단정할 수 없습니다.'
+            : '현재 조치 ID와 일치합니다. 이는 화면 입력값의 비교이며, 서버의 전체 요청 결속 검증을 뜻하지 않습니다.');
+        } else {
+          line('조치 연결 확인', '현재 조치 ID가 없거나 유효하지 않아 대조할 수 없습니다. 일치한다고 판단하지 않습니다.');
+        }
+      }
+      if (receiptObject && (hasValue(receipt.eventId) || hasValue(receipt.actionId) || hasValue(receipt.requestId))) {
+        if (receiptBindingMismatch) {
+          line('영수증 결속 상태', '불일치: 이 영수증은 현재 사건·조치의 정상 결과로 표시하지 않습니다.');
+        } else if (!receiptBindingComplete) {
+          line('영수증 결속 상태', '확인 불가: 현재 사건·조치 ID와 영수증의 사건·조치 ID가 모두 있어야 비교할 수 있습니다.');
+        } else if (!receiptRequestIdValid) {
+          line('영수증 결속 상태', '사건·조치 ID는 일치하지만 requestId가 없어 요청 연결을 확인할 수 없습니다.');
+        } else {
+          line('영수증 결속 상태', '현재 사건·조치 ID와 requestId를 입력값에서 확인했습니다. 대상·세대·버전 및 서버 측 결속 검증을 완료했다는 뜻은 아닙니다.');
+        }
+      } else if (receiptObject && (currentEventIdValid || currentActionIdValid)) {
+        line('영수증 결속 상태', 'receipt의 사건·조치·요청 식별 정보가 부족해 현재 요청과의 결속을 확인할 수 없습니다.');
+      }
+      if (receipt != null && Object.hasOwn(receipt, 'replayed')) {
+        line('재사용 여부 (replayed)', displayValue(receipt.replayed));
+        if (receipt.replayed === true) {
+          line('재전달 안내', '기존 요청 결과를 다시 받은 상태(replayed)입니다. 새로운 집행 성공을 뜻하지 않습니다.');
+        }
+      }
+
+      if (hasValue(observation?.observedAt)) {
+        line('관측 시각 (observedAt)', displayValue(observation.observedAt));
+      }
+      if (observation != null && Object.hasOwn(observation, 'effectApplied')) {
+        line('효과 관측값 (effectApplied)', displayValue(observation.effectApplied));
+      }
+      if (status === 'pending' || status === 'executing') {
+        line('관측 안내', '현재 상태는 진행 중입니다. 관측 정보가 있어도 상태를 성공으로 바꾸지 않습니다.');
+      }
+      if (status === 'succeeded' && observation?.effectApplied === true && receiptBindingComplete && receiptRequestIdValid) {
+        if (hasValue(observation?.observedAt) && hasValue(receipt?.receiptId)) {
+          line('효과 확인 정보', `관측 시각 ${displayValue(observation.observedAt)} · 영수증 ${displayValue(receipt.receiptId)}`);
+        } else {
+          const missing = [];
+          if (!hasValue(observation?.observedAt)) missing.push('관측 시각');
+          if (!hasValue(receipt?.receiptId)) missing.push('영수증 ID');
+          line('효과 확인 정보', `effectApplied: true는 전달됐지만 ${missing.join(' 및 ')}를 확인할 수 없습니다. 값을 만들어 내지 않았습니다.`);
+        }
+      }
+      if (status === 'succeeded' && observation?.effectApplied !== true) {
+        line('관측 안내', 'effectApplied가 true로 확인되지 않아 실제 효과를 확인했다고 표시하지 않습니다.');
+      }
+      if (receipt != null && (hasValue(receipt.eventId) || hasValue(receipt.actionId))) {
+        line('영수증 안내', '영수증 정보만으로 조치 집행 성공이나 실제 효과가 확인된 것은 아닙니다.');
+      }
+      line('검증 범위', '화면은 전달된 식별값의 비교만 표시합니다. 실제 대상·세대·버전·요청 결속 및 중복 방지는 제공 코드와 서버의 책임이며, 이 화면이 이를 완료했다고 주장하지 않습니다.');
+
+      if (status !== 'error' && safeStatusMessage !== null) {
+        line(status === 'denied' || status === 'failed' ? '처리 메시지' : '메시지', safeStatusMessage);
+      }
+      return root;
+    },
   };
 }
