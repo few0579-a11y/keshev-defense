@@ -781,13 +781,13 @@ export function createStudentView() {
       const root = document.createElement('div');
       root.className = 'student-ai-explanation';
 
-      const line = (label, value) => {
+      const line = (label, value, parent = root) => {
         const item = document.createElement('p');
         item.textContent = `${label}: ${value}`;
-        root.append(item);
+        parent.append(item);
       };
       const displayValue = (value) => {
-        if (typeof value === 'string' && value.trim() !== '') return value;
+        if (typeof value === 'string' && value.trim() !== '') return value.trim();
         if (typeof value === 'number' || typeof value === 'boolean') return String(value);
         return '확인 불가';
       };
@@ -810,25 +810,211 @@ export function createStudentView() {
           .slice(0, 500);
         return safeMessage || '오류 메시지를 확인할 수 없습니다.';
       };
+      const isNonEmptyString = (value) => typeof value === 'string' && value.trim() !== '';
+      const isStringArray = (value) => Array.isArray(value) && value.every(isNonEmptyString);
+      const isValidProposal = (proposal) => proposal !== null
+        && typeof proposal === 'object'
+        && !Array.isArray(proposal)
+        && isNonEmptyString(proposal.action)
+        && isStringArray(proposal.evidenceIds)
+        && isNonEmptyString(proposal.reason);
 
-      if (explanation?.status === 'ok') {
-        const eventId = event?.id;
-        root.setAttribute('data-student-explanation-event', eventId == null ? '' : String(eventId));
-        line('상태', '보안 사건 설명에 성공했습니다.');
-        line('사건 ID', displayValue(eventId));
-        line('설명 요약', displayValue(explanation?.data?.summary));
-        if (checkedAt !== undefined && checkedAt !== null && checkedAt !== '') {
-          line('확인 시각', displayValue(checkedAt));
-        }
-        line('안내', '설명은 읽기 전용입니다. 제안된 조치는 자동으로 실행되지 않습니다.');
-      } else if (explanation?.status === 'error') {
+      if (explanation?.status === 'error') {
         line('상태', '보안 사건 설명에 실패했습니다.');
         line('오류 코드', safeErrorCode(explanation?.error?.code));
         line('오류 메시지', safeErrorMessage(explanation?.error?.message));
         line('안내', '설명 요청이 실패했으며 원래 보안 기록은 변경되지 않았습니다.');
-      } else {
+      } else if (event == null) {
+        line('상태', '보안 기록에서 기록을 먼저 고르세요.');
+      } else if (explanation?.status === 'loading') {
+        line('상태', 'AI 사건 설명 요청 중');
+      } else if (explanation?.status === 'ok') {
+        const data = explanation.data;
+        const validEventId = isNonEmptyString(event?.id);
+        const validData = data !== null && typeof data === 'object' && !Array.isArray(data);
+        const validSummary = validData && isNonEmptyString(data.summary);
+        const validEvidenceIds = validData && isStringArray(data.evidenceIds);
+        const validProposals = validData
+          && Array.isArray(data.proposals)
+          && data.proposals.every(isValidProposal);
+        const notExecuted = validData && data.executed === false;
+        const requiresHumanConfirmation = validData && data.requiresHumanConfirmation === true;
+        const evidenceRecords = Array.isArray(event?.evidence) ? event.evidence : null;
+        const evidenceIdsUnique = validEvidenceIds
+          && new Set(data.evidenceIds).size === data.evidenceIds.length;
+        const matchedEvidence = [];
+        let validEvidenceBinding = Boolean(validEvidenceIds && evidenceIdsUnique && evidenceRecords);
+        if (validEvidenceBinding) {
+          for (const citedId of data.evidenceIds) {
+            const matches = evidenceRecords.filter((item) => item !== null
+              && typeof item === 'object'
+              && !Array.isArray(item)
+              && item.id === citedId);
+            if (matches.length !== 1 || !isNonEmptyString(matches[0]?.text)) {
+              validEvidenceBinding = false;
+              break;
+            }
+            matchedEvidence.push(matches[0]);
+          }
+        }
+        const rules = Array.isArray(event?.rules) ? event.rules : null;
+        const validRules = rules !== null && rules.every((rule) => rule !== null
+          && typeof rule === 'object'
+          && !Array.isArray(rule)
+          && isNonEmptyString(rule.id)
+          && isNonEmptyString(rule.text));
+
+        const supportedActions = Array.isArray(event?.supportedActions) ? event.supportedActions : null;
+        const validSupportedActions = supportedActions !== null
+          && supportedActions.every(isNonEmptyString);
+        const proposalEvidence = [];
+        let validProposalEvidence = validProposals && validSupportedActions;
+        if (validProposalEvidence) {
+          for (const proposal of data.proposals) {
+            const citedIds = proposal.evidenceIds;
+            if (citedIds.length === 0 || new Set(citedIds).size !== citedIds.length) {
+              validProposalEvidence = false;
+              break;
+            }
+            const proposalMatches = [];
+            for (const citedId of citedIds) {
+              const matches = evidenceRecords?.filter((item) => item !== null
+                && typeof item === 'object'
+                && !Array.isArray(item)
+                && item.id === citedId) ?? [];
+              if (matches.length !== 1 || !isNonEmptyString(matches[0]?.text)) {
+                validProposalEvidence = false;
+                break;
+              }
+              proposalMatches.push(matches[0]);
+            }
+            if (!validProposalEvidence) break;
+            proposalEvidence.push(proposalMatches);
+          }
+        }
+        const supportedProposalActions = validProposals && validSupportedActions
+          && data.proposals.every((proposal) => supportedActions.includes(proposal.action));
+        const validResult = validEventId
+          && validData
+          && validSummary
+          && validEvidenceIds
+          && validProposals
+          && notExecuted
+          && requiresHumanConfirmation
+          && validEvidenceBinding
+          && validRules
+          && validSupportedActions
+          && validProposalEvidence
+          && supportedProposalActions;
+
+        if (!validResult) {
+          const reasons = [];
+          if (!validEventId) reasons.push('사건 ID를 확인할 수 없습니다');
+          if (!validData) reasons.push('설명 자료 형식이 올바르지 않습니다');
+          else {
+            if (!validSummary) reasons.push('요약을 확인할 수 없습니다');
+            if (!validEvidenceIds) reasons.push('근거 ID 목록 형식을 확인할 수 없습니다');
+            if (!validProposals) reasons.push('제안 목록 형식을 확인할 수 없습니다');
+            if (data.executed === true) reasons.push('이미 실행된 결과는 설명으로 사용할 수 없습니다');
+            else if (!notExecuted) reasons.push('미실행 상태를 확인할 수 없습니다');
+            if (!requiresHumanConfirmation) reasons.push('사람 확인 필요 상태가 공식 계약과 일치하지 않습니다');
+          }
+          if (!validEvidenceBinding) {
+            reasons.push(evidenceRecords === null
+              ? '현재 사건의 근거 자료를 확인할 수 없습니다'
+              : '근거가 현재 사건과 일치하지 않습니다');
+          }
+          if (!validRules) reasons.push('현재 사건의 규칙 자료를 확인할 수 없습니다');
+          if (!validSupportedActions) reasons.push('현재 사건이 지원하는 조치 목록을 확인할 수 없습니다');
+          if (validProposals && validSupportedActions && !supportedProposalActions) {
+            reasons.push('지원하지 않는 조치가 제안되어 설명을 사용할 수 없습니다');
+          }
+          if (!validProposalEvidence) reasons.push('제안의 근거 ID가 현재 사건의 근거와 일치하지 않거나 누락·중복되었습니다');
+          line('상태', '설명 사용 불가: 결과를 확인할 수 없습니다.');
+          line('안내', reasons.join(' · ') || '설명 결과가 공식 입력 계약을 충족하는지 확인할 수 없습니다.');
+        } else {
+          root.setAttribute('data-student-explanation-event', String(event.id));
+          line('상태', '보안 사건 설명에 성공했습니다.');
+          line('사건 ID', displayValue(event.id));
+          line('AI 설명(참고용)', displayValue(data.summary));
+          if (checkedAt !== undefined && checkedAt !== null && checkedAt !== '') {
+            line('확인 시각', displayValue(checkedAt));
+          }
+
+          const evidenceHeading = document.createElement('h3');
+          evidenceHeading.textContent = '인용 근거';
+          root.append(evidenceHeading);
+          if (matchedEvidence.length === 0) {
+            line('근거', '인용된 근거가 없습니다.');
+          } else {
+            for (const evidence of matchedEvidence) {
+              const evidenceLine = document.createElement('p');
+              evidenceLine.textContent = `${evidence.id} — ${evidence.text}`;
+              root.append(evidenceLine);
+            }
+          }
+
+          const rulesHeading = document.createElement('h3');
+          rulesHeading.textContent = '규칙';
+          root.append(rulesHeading);
+          if (rules.length === 0) {
+            line('규칙', '표시할 규칙이 없습니다');
+          } else {
+            for (const rule of rules) {
+              const ruleLine = document.createElement('p');
+              ruleLine.textContent = `${rule.id} — ${rule.text}`;
+              root.append(ruleLine);
+            }
+          }
+
+          const unknownStates = [];
+          if (event?.state?.access === 'unknown') unknownStates.push('접속: 확인 불가(unknown)');
+          if (event?.state?.session === 'unknown') unknownStates.push('세션: 확인 불가(unknown)');
+          if (event?.state?.device === 'unknown') unknownStates.push('기기: 확인 불가(unknown)');
+          const unknownHeading = document.createElement('h3');
+          unknownHeading.textContent = '확인 불가 상태';
+          root.append(unknownHeading);
+          if (unknownStates.length === 0) {
+            line('상태', '확인 불가 상태 없음');
+          } else {
+            for (const state of unknownStates) line('상태', state);
+          }
+
+          const proposalsHeading = document.createElement('h3');
+          proposalsHeading.textContent = 'AI 조치 제안 (참고용)';
+          root.append(proposalsHeading);
+          if (data.proposals.length === 0) {
+            line('제안', supportedActions.length === 0
+              ? '연동 시스템이 지원하는 조치가 없어 제안이 없습니다(정상).'
+              : 'AI가 제안한 조치가 없습니다.');
+          } else {
+            for (let index = 0; index < data.proposals.length; index += 1) {
+              const proposal = data.proposals[index];
+              const proposalSection = document.createElement('section');
+              const proposalHeading = document.createElement('h4');
+              proposalHeading.textContent = `제안 ${index + 1}`;
+              proposalSection.append(proposalHeading);
+              line('조치 ID (action)', proposal.action, proposalSection);
+              line('제안 이유 (reason)', proposal.reason, proposalSection);
+              line('제안 근거 ID (evidenceIds)', proposal.evidenceIds.join(', '), proposalSection);
+              for (const evidence of proposalEvidence[index]) {
+                const evidenceLine = document.createElement('p');
+                evidenceLine.textContent = `제안 근거: ${evidence.id} — ${evidence.text}`;
+                proposalSection.append(evidenceLine);
+              }
+              line('사람 확인 필요', '예 (requiresHumanConfirmation: true)', proposalSection);
+              line('실행 상태', '아직 실행되지 않음 (executed: false)', proposalSection);
+              root.append(proposalSection);
+            }
+          }
+          line('안내', 'AI 설명은 참고 정보입니다. 조치 제안만으로는 실행되지 않으며, 이 화면은 조치를 실행하지 않습니다.');
+        }
+      } else if (explanation?.status === 'idle' || explanation == null) {
         line('상태', '사건 설명을 아직 실행하지 않았습니다.');
         line('안내', '연결 점검이나 모델 목록 확인만으로 사건 설명 성공을 뜻하지 않습니다.');
+      } else {
+        line('상태', '사건 설명 결과를 확인할 수 없습니다.');
+        line('안내', '확인되지 않은 결과를 성공으로 처리하지 않습니다.');
       }
 
       return root;
