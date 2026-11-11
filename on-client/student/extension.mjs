@@ -655,8 +655,184 @@ export function createStudentView() {
       return root;
     },
     renderVulnerabilities() { return '학생 구현 대기: 정확한 설치 버전·OSV 출처·조회 시각·부분 결과·조회 실패를 구분하세요.'; },
-    renderAiConnection() { return '학생 구현 대기: 모델 응답 점검과 실제 사건 설명을 구분하고 AI 오류·취소·수동 복구를 안내하세요.'; },
-    renderExplanation() { return '학생 구현 대기: 선택한 사건의 근거·규칙·현재 상태와 AI 설명을 연결하세요. 제안은 자동 실행하지 않습니다.'; },
+    renderAiConnection({ status, mode, data, error, checkedAt, explanationAccepted } = {}) {
+      const root = document.createElement('div');
+      root.className = 'student-ai-connection';
+
+      const line = (label, value) => {
+        const item = document.createElement('p');
+        item.textContent = `${label}: ${value}`;
+        root.append(item);
+      };
+      const displayValue = (value) => {
+        if (typeof value === 'string' && value.trim() !== '') return value.trim();
+        if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+        return '확인 불가';
+      };
+      const modeLabels = {
+        connected: '연결 경로 표시: connected (이 표시만으로 AI 점검 성공을 뜻하지 않습니다)',
+        demo: '예제 자료(demo) · 실제 AI 연결이나 실제 점검 성공이 아닙니다',
+        disconnected: '연결 없음(disconnected) · AI 연결 성공이 아닙니다',
+        unknown: '연결 상태 확인 불가(unknown)',
+      };
+      const currentMode = mode ?? 'unknown';
+      line('연결 모드', Object.hasOwn(modeLabels, currentMode)
+        ? modeLabels[currentMode]
+        : '연결 상태 확인 불가(unknown)');
+
+      const errorCodeText = (value) => typeof value === 'string'
+        && /^[A-Z][A-Z0-9_.:-]{0,99}$/.test(value)
+        ? value
+        : '확인 불가';
+      const safeErrorMessage = (value) => {
+        if (typeof value !== 'string' || value.trim() === '') return '오류 메시지를 확인할 수 없습니다.';
+        return value
+          .replace(/[\u0000-\u001f\u007f]/g, ' ')
+          .replace(/\b(bearer\s+)[A-Za-z0-9._~+/=-]+/gi, '$1[가림]')
+          .replace(/\b(api[_ -]?key|access[_ -]?token|refresh[_ -]?token|token|password|passwd|secret|비밀번호|토큰|키)(\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;]+)/gi, '$1$2[가림]')
+          .replace(/([?&](?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|password|secret)=)[^&#\s]+/gi, '$1[가림]')
+          .replace(/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, '[가림]')
+          .trim()
+          .slice(0, 500);
+      };
+      const errorGuidance = {
+        WB_CLCO_AUTH_REQUIRED: ['인증 확인 필요', '제공 화면의 인증 안내를 확인하세요. 비밀번호·토큰·키를 대화창에 붙여 넣지 마세요.'],
+        WB_CLCO_ACCESS_BLOCKED: ['권한 제한', '제공 화면의 권한 안내를 확인하고, 임의로 인증 설정을 바꾸지 마세요.'],
+        ON_AI_PROVISIONING_PENDING: ['AI 준비 상태 확인 필요', '제공 화면의 안내를 확인하세요. 준비 상태가 계속되면 오류 문구를 가린 뒤 담당자에게 문의하세요.'],
+        WB_CLCO_SESSION_CLOSED: ['이용 시간 또는 세션 상태 안내', '제공 화면에 표시된 이용 시간 안내를 확인하세요.'],
+        WB_CLCO_COHORT_BUDGET_EXHAUSTED: ['반 AI 사용량·한도 안내', '비밀값을 가린 화면 문구와 발생 시각, 반 이름을 과제 운영 SKT 담당자에게 보내 상태와 조정 필요 여부를 확인해 주세요.'],
+        WB_CLCO_LIMIT_REACHED: ['반 AI 사용량·한도 안내', '비밀값을 가린 화면 문구와 발생 시각, 반 이름을 과제 운영 SKT 담당자에게 보내 상태와 조정 필요 여부를 확인해 주세요.'],
+        WB_CLCO_RATE_LIMITED: ['요청 제한', '요청 제한 안내를 확인하세요. 필요하면 제공 화면의 점검 버튼을 직접 눌러 다시 확인하세요.'],
+        WB_CLCO_SERVER_UNAVAILABLE: ['서비스 응답 확인 필요', '서비스 상태를 확인하세요. 자동 재점검은 하지 않으며, 필요하면 제공 화면에서 직접 다시 점검하세요.'],
+        WB_CLCO_NETWORK_ERROR: ['네트워크 오류', '네트워크 상태와 제공 화면의 안내를 확인한 뒤, 필요하면 직접 다시 점검하세요.'],
+        WB_CLCO_TIMEOUT: ['시간 초과', '이번 점검 결과는 확인되지 않았습니다. 제공 화면의 안내를 확인하고 필요하면 직접 다시 점검하세요.'],
+        WB_CLCO_CANCELLED: ['점검 취소', '점검이 취소되었습니다. 이는 성공이나 거부 판정이 아닙니다. 필요하면 제공 화면에서 직접 다시 점검하세요.'],
+        MODEL_NOT_CONFIGURED: ['모델 설정 확인 필요', '모델 설정 상태를 제공 화면의 안내에 따라 확인하세요. 비밀 키나 토큰을 요청하거나 대화창에 붙여 넣지 마세요.'],
+        ON_AI_MODEL_LIST_EMPTY: ['사용 가능한 모델 확인 불가', '모델 목록을 확인할 수 없습니다. 제공 화면의 안내를 따르고, 비밀 키나 토큰을 공유하지 마세요.'],
+        ON_AI_AUTHORIZATION_CHANGED: ['권한 상태 변경', '제공 화면의 최신 권한 안내를 확인한 뒤 직접 다시 점검하세요.'],
+        ON_AI_TRANSPORT_PENDING: ['AI 전송 경로 확인 불가', '전송 경로 점검이 완료되지 않았습니다. 제공 화면의 안내를 확인하세요.'],
+        WB_CLCO_INVALID_RESPONSE: ['응답 확인 불가', '응답을 검증할 수 없습니다. 비밀값을 가린 화면 문구와 발생 시각, 반 이름을 과제 운영 SKT 담당자에게 보내 주세요.'],
+        WB_CLCO_REQUEST_FAILED: ['요청 실패', '오류 원인을 여기서 확정할 수 없습니다. 화면 문구에서 키·토큰·비밀번호·개인정보를 가린 뒤, 그 문구와 시각, 반 이름을 과제 운영 SKT 담당자에게 보내 주세요.'],
+      };
+
+      if (status === 'idle') {
+        line('상태', 'AI 연결 점검 전');
+        line('다시 확인', '필요하면 제공 화면의 점검 버튼을 직접 눌러 확인하세요. 자동 점검은 실행하지 않습니다.');
+      } else if (status === 'loading') {
+        line('상태', 'AI 연결 점검 중');
+        line('진행 안내', '이 화면은 점검 결과만 표시하며, 보안 사건 설명을 요청하지 않습니다.');
+      } else if (status === 'ok') {
+        line('상태', 'AI 연결 점검 결과를 받았습니다.');
+        if (data?.transportChecked === true) {
+          line('전송 경로 점검', '완료 (transportChecked: true)');
+        } else if (data?.transportChecked === false) {
+          line('전송 경로 점검', '완료되지 않음 (transportChecked: false)');
+        } else {
+          line('전송 경로 점검', '확인 불가');
+        }
+
+        if (data?.audienceAuthorization === 'test') {
+          line('권한 확인', '시험 연결 점검(test)');
+        } else if (data?.audienceAuthorization === 'verified') {
+          line('권한 확인', '앱 권한 확인 후 점검(verified)');
+        } else {
+          line('권한 확인', '확인 불가');
+        }
+
+        const modelCount = typeof data?.modelCount === 'number' && Number.isFinite(data.modelCount)
+          && data.modelCount >= 0
+          ? String(data.modelCount)
+          : '확인 불가';
+        line('모델 수', modelCount);
+        line('점검 시각', displayValue(checkedAt));
+        line('설명 동의 상태', explanationAccepted === true
+          ? '확인됨 (동의는 사건 설명 실행을 뜻하지 않습니다)'
+          : explanationAccepted === false
+            ? '아직 확인되지 않음'
+            : '확인 불가');
+        line('사건 설명', '사건 설명은 아직 실행하지 않았습니다. 연결 점검은 모델 목록 확인이며, 보안 사건 설명 호출이나 성공을 확인하지 않습니다.');
+      } else if (status === 'error') {
+        const code = errorCodeText(error?.code);
+        const message = safeErrorMessage(error?.message);
+        line('상태', 'AI 연결 점검 실패');
+        line('오류 코드', code);
+        line('오류 메시지', message);
+
+        const guidance = errorGuidance[code];
+        if (guidance) {
+          line('오류 구분', guidance[0]);
+          line('다음 행동', guidance[1]);
+        } else if (code.startsWith('ALEKOV_VAULT_')) {
+          line('오류 구분', '열쇠 보관소 관련 안내');
+          line('다음 행동', '이 코드에 표시된 안내 절차를 따르세요. 키·토큰·비밀번호 값은 대화창에 붙여 넣지 마세요.');
+        } else {
+          line('오류 구분', '확인 불가');
+          line('다음 행동', '화면 문구에서 키·토큰·비밀번호·개인정보를 가린 뒤, 그 문구와 시각, 반 이름을 과제 운영 SKT 담당자에게 보내 주세요.');
+        }
+        line('수동 재점검', '자동 재점검은 하지 않습니다. 필요하면 제공 화면의 점검 버튼을 직접 눌러 다시 확인하세요.');
+      } else {
+        line('상태', 'AI 연결 점검 상태를 확인할 수 없습니다.');
+      }
+
+      line('사건 설명 안내', '이 AI 연결 점검에서는 실제 보안 사건 설명을 실행하지 않았습니다.');
+      return root;
+    },
+    renderExplanation({ event, explanation, checkedAt } = {}) {
+      const root = document.createElement('div');
+      root.className = 'student-ai-explanation';
+
+      const line = (label, value) => {
+        const item = document.createElement('p');
+        item.textContent = `${label}: ${value}`;
+        root.append(item);
+      };
+      const displayValue = (value) => {
+        if (typeof value === 'string' && value.trim() !== '') return value;
+        if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+        return '확인 불가';
+      };
+      const safeErrorCode = (value) => typeof value === 'string'
+        && /^[A-Z][A-Z0-9_.:-]{0,99}$/.test(value)
+        ? value
+        : '확인 불가';
+      const safeErrorMessage = (value) => {
+        if (typeof value !== 'string' || value.trim() === '') {
+          return '오류 메시지를 확인할 수 없습니다.';
+        }
+        const safeMessage = value
+          .replace(/[\u0000-\u001f\u007f]/g, ' ')
+          .replace(/\b(bearer\s+)[A-Za-z0-9._~+/=-]+/gi, '$1[가림]')
+          .replace(/\b(api[_ -]?key|access[_ -]?token|refresh[_ -]?token|authorization|credential|token|password|passwd|secret|private[_ -]?key|비밀번호|토큰|키)(\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;]+)/gi, '$1$2[가림]')
+          .replace(/([?&](?:api[_-]?key|access[_-]?token|refresh[_-]?token|authorization|token|password|secret)=)[^&#\s]+/gi, '$1[가림]')
+          .replace(/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, '[가림]')
+          .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/gi, '[비밀 키 가림]')
+          .trim()
+          .slice(0, 500);
+        return safeMessage || '오류 메시지를 확인할 수 없습니다.';
+      };
+
+      if (explanation?.status === 'ok') {
+        const eventId = event?.id;
+        root.setAttribute('data-student-explanation-event', eventId == null ? '' : String(eventId));
+        line('상태', '보안 사건 설명에 성공했습니다.');
+        line('사건 ID', displayValue(eventId));
+        line('설명 요약', displayValue(explanation?.data?.summary));
+        if (checkedAt !== undefined && checkedAt !== null && checkedAt !== '') {
+          line('확인 시각', displayValue(checkedAt));
+        }
+        line('안내', '설명은 읽기 전용입니다. 제안된 조치는 자동으로 실행되지 않습니다.');
+      } else if (explanation?.status === 'error') {
+        line('상태', '보안 사건 설명에 실패했습니다.');
+        line('오류 코드', safeErrorCode(explanation?.error?.code));
+        line('오류 메시지', safeErrorMessage(explanation?.error?.message));
+        line('안내', '설명 요청이 실패했으며 원래 보안 기록은 변경되지 않았습니다.');
+      } else {
+        line('상태', '사건 설명을 아직 실행하지 않았습니다.');
+        line('안내', '연결 점검이나 모델 목록 확인만으로 사건 설명 성공을 뜻하지 않습니다.');
+      }
+
+      return root;
+    },
     renderAction() { return '학생 구현 대기: 현재 사건·조치·실제 대상·사람 확인·ACK와 원천 효과·unknown을 구분하세요.'; },
   };
 }
